@@ -43,13 +43,13 @@ There are 2 interfaces needed for managing events:
 
 ### EventInterface
 
-The EventInterface defines the methods needed to dispatch an event.  Each event
-MUST contain a event name in order trigger the listeners. Each event MAY have a
-target which is an object that is the context the event is being triggered for.
-OPTIONALLY the event can have additional parameters for use within the event.
+The EventInterface defines the methods needed for the EventManager to interact
+with the listeners.
 
-The event MUST contain a propegation flag that signals the EventManager to stop
-passing along the event to other listeners.
+The event MUST contain a propagation flag that signals the EventManager to stop
+passing along the event to other listeners. The event MUST contain an immutable
+flag that signals to the listeners if they are allowed to modify the
+content/payload of an event.
 
 ~~~php
 
@@ -60,65 +60,13 @@ namespace Psr\EventManager;
  */
 interface EventInterface
 {
-    /**
-     * Get event name
-     *
-     * @return string
-     */
-    public function getName();
 
     /**
-     * Get target/context from which event was triggered
+     * Indicate whether or not contents/payload can be modified.
      *
-     * @return null|string|object
+     * @return bool
      */
-    public function getTarget();
-
-    /**
-     * Get parameters passed to the event
-     *
-     * @return array
-     */
-    public function getParams();
-
-    /**
-     * Get a single parameter by name
-     *
-     * @param  string $name
-     * @return mixed
-     */
-    public function getParam($name);
-
-    /**
-     * Set the event name
-     *
-     * @param  string $name
-     * @return void
-     */
-    public function setName($name);
-
-    /**
-     * Set the event target
-     *
-     * @param  null|string|object $target
-     * @return void
-     */
-    public function setTarget($target);
-
-    /**
-     * Set event parameters
-     *
-     * @param  array $params
-     * @return void
-     */
-    public function setParams(array $params);
-
-    /**
-     * Indicate whether or not to stop propagating this event
-     *
-     * @param  bool $flag
-     */
-    public function stopPropagation($flag);
+     public function isImmutableEvent();
 
     /**
      * Has this event indicated event propagation should stop?
@@ -126,14 +74,86 @@ interface EventInterface
      * @return bool
      */
     public function isPropagationStopped();
+
+    /**
+     * Indicate whether or not to stop propagating this event.
+     *
+     * @param  bool $flag
+     */
+    public function setPropagationStopped($flag = true);
+
+}
+~~~
+
+### EventTrait
+
+This is an example of an OPTIONAL compatible trait for a class that is
+trying to implementing the EventInterface.
+
+~~~php
+
+namespace Psr\EventManager;
+
+/**
+ * Example trait for class implementing EventInterface.
+ */
+trait EventTrait {
+
+    /**
+     * Indicate whether or not contents/payload can be modified.
+     *
+     * @return bool
+     */
+     public function isImmutableEvent() {
+        return $this->immutableEvent;
+     }
+
+    /**
+     * Has this event indicated event propagation should stop?
+     *
+     * @return bool
+     */
+    public function isPropagationStopped() {
+        return $this->propagationStopped;
+    }
+
+    /**
+     * Indicate whether or not to stop propagating this event.
+     *
+     * @param  bool $flag
+     */
+    public function setPropagationStopped($flag = true) {
+        $this->propagationStopped = (bool)$flag;
+    }
+    
+    /**
+     * @var bool $immutableEvent used to track if listener is allowed to change
+     *                           the content of event outside of propagation.
+     */
+    private $immutableEvent = false;
+
+    /**
+     * @var bool $propagationStopped used to track if propagation should be
+     *                               stopped.
+     */
+    private $propagationStopped = false;
+
 }
 ~~~
 
 ### EventManagerInterface
 
-The EventManager holds all the listeners for a particular event.  Since an
-event can have many listeners that each return a result, the EventManager
- MUST return the result from the last listener.
+The EventManager holds all the listeners for a particular event. For a mutable
+event which can have many listeners that each return a result, the EventManager
+MUST return the result from the last listener. For an immutable event the 
+EventManager MUST return the result of EventInterface::isPropagationStopped().
+The EventManager SHALL NOT attach the same listener multiple times for the
+same eventName and priority but MUST ignore additional attach calls silently.
+The EventManager SHALL allow the same listener to attach to multiple event and
+priority combinations. The EventManager MUST allow multiple listeners for an
+event with the same priority and MUST call them in the order they were attached
+in. The EventManager MUST pass the parameters shown in the
+EventListenerInterface when calling the attach listeners.
 
 ~~~php
 
@@ -145,42 +165,83 @@ namespace Psr\EventManager;
 interface EventManagerInterface
 {
     /**
-     * Attaches a listener to an event
+     * Attaches a listener to an event.
      *
-     * @param string $event the event to attach too
-     * @param callable $callback a callable function
-     * @param int $priority the priority at which the $callback executed
-     * @return bool true on success false on failure
+     * @param string $eventName the name of the event to attach too
+     * @param callable $listener a callable function
+     * @param int $priority the priority at which the $listener executed with
+     *                      higher priorities level listeners executing after
+     *                      lower ones until isPropagationStopped() returns
+     *                      true.
+     *
+     * @return $this fluent interface
      */
-    public function attach($event, $callback, $priority = 0);
+    public function attach($eventName, callable $listener, $priority = 0);
 
     /**
-     * Detaches a listener from an event
+     * Detaches a listener from an event.
      *
-     * @param string $event the event to attach too
-     * @param callable $callback a callable function
+     * @param string $eventName the name of the event to detach from
+     * @param callable $listener a callable function
+     *
      * @return bool true on success false on failure
      */
-    public function detach($event, $callback);
+    public function detach($eventName, callable $listener);
 
     /**
-     * Clear all listeners for a given event
+     * Clear all listeners for a given event.
      *
-     * @param  string $event
-     * @return void
+     * @param  string $eventName the name of the event
+     *
+     * @return $this fluent interface
      */
-    public function clearListeners($event);
+    public function clearListeners($eventName);
 
     /**
      * Trigger an event
      *
-     * Can accept an EventInterface or will create one if not passed
+     * Can accept an EventInterface or will create one if not passed.
      *
-     * @param  string|EventInterface $event
-     * @param  object|string $target
-     * @param  array|object $argv
-     * @return mixed
+     * @param string         $eventName the name of the event
+     * @param EventInterface $event
+     * @param bool           $immutable this flag only applies if $event = null and Manager is creating a new instance.
+     *
+     * @return bool|EventInterface returns status of isPropagationStopped() for immutuble events or the possible changed
+     * event for mutable events.
      */
-    public function trigger($event, $target = null, $argv = array());
+    public function trigger($eventName, EventInterface $event = null, immutable = true);
+}
+~~~
+
+### EventListenerInterface (non-nominal)
+
+This is an OPTIONAL non-nominal example compatible interface for listeners used
+to document the parameters that the EventManager will past to the listener when
+the event is triggered. The listener SHALL NOT make any changes to the event
+when isImmutableEvent() is true outside of that required by the implementation
+of setPropagationStopped(). The listener MAY make other changes to the event
+when isImmutableEvent() and they well be returned to the event trigger code if
+the listener also uses EventInterface::setPropagationStopped(true).
+
+~~~php
+
+namespace Psr\EventManager;
+
+/**
+ * OPTIONAL non-nominal example interface for listener.
+ */
+interface EventListenerInferface {
+
+    /**
+     * Example callable listener method.
+     *
+     * @param string $eventName the name of the event
+     * @param EventInterface $event the actual event object
+     *
+     * @return EventInterface returns an event with isPropagationStopped() set
+     *                        if propagation should stop.
+     */
+     public function eventListener($eventName, EventInterface $event);
+
 }
 ~~~
